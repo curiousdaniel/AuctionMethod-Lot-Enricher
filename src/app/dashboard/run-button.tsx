@@ -19,7 +19,7 @@ export function RunEnrichmentButton() {
 
       if (!res.ok) {
         setState("error");
-        setResult(data.error || `Failed with status ${res.status}`);
+        setResult(data.details || data.error || `Failed with status ${res.status}`);
         return;
       }
 

@@ -7,11 +7,13 @@ export const maxDuration = 60;
 export async function POST() {
   try {
     const summary = await runEnrichmentJob();
-    console.log("[Trigger] Run complete:", summary);
+    console.log("[Trigger] Run complete:", JSON.stringify(summary));
     return NextResponse.json(summary);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
     console.error("[Trigger] Fatal error:", message);
+    if (stack) console.error("[Trigger] Stack:", stack);
     return NextResponse.json(
       { error: "Enrichment run failed", details: message },
       { status: 500 }

@@ -12,9 +12,21 @@ export interface EnrichmentJobResult {
   timestamp: string;
 }
 
+function validateEnvVars() {
+  const required = ["AM_DOMAIN", "AM_EMAIL", "AM_PASSWORD", "DATABASE_URL"];
+  const missing = required.filter((v) => !process.env[v]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
+  }
+  console.log("[Enrich Job] Environment OK. AM_DOMAIN:", process.env.AM_DOMAIN);
+}
+
 export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
+  validateEnvVars();
+
   console.log("[Enrich Job] Authenticating with AM API...");
   await amAuth();
+  console.log("[Enrich Job] Auth successful");
 
   console.log("[Enrich Job] Fetching active auctions...");
   const auctions = await getAllActiveAuctions();
