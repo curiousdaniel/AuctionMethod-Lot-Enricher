@@ -37,17 +37,17 @@ function extractDescription(item: AMItem): string {
 export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
   validateEnvVars();
 
-  // Reset ALL error items so they can be re-processed with fixed pipeline
+  // Reset PROCESSING items stuck for more than 10 minutes
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
   const resetResult = await prisma.enrichedItem.updateMany({
-    where: { status: "ERROR" },
-    data: {
-      status: "PENDING",
-      retryCount: 0,
-      errorMessage: null,
+    where: {
+      status: "PROCESSING",
+      updatedAt: { lt: tenMinutesAgo },
     },
+    data: { status: "PENDING" },
   });
   if (resetResult.count > 0) {
-    console.log(`[Enrich Job] Reset ${resetResult.count} error items to PENDING`);
+    console.log(`[Enrich Job] Reset ${resetResult.count} stuck PROCESSING items`);
   }
 
   // Clean up stale auction scans for auctions that have ended

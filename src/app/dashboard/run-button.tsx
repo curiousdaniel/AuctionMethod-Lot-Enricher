@@ -15,7 +15,22 @@ export function RunEnrichmentButton() {
         method: "POST",
       });
 
-      const data = await res.json();
+      if (res.status === 504) {
+        setState("done");
+        setResult("Timed out — but items may have been processed. Refreshing...");
+        setTimeout(() => window.location.reload(), 2000);
+        return;
+      }
+
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        setState("error");
+        setResult(`Server returned non-JSON response (status ${res.status})`);
+        setTimeout(() => window.location.reload(), 3000);
+        return;
+      }
 
       if (!res.ok) {
         setState("error");
