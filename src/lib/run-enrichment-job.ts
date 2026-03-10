@@ -37,6 +37,22 @@ function extractDescription(item: AMItem): string {
 export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
   validateEnvVars();
 
+  // Reset any ERROR items that failed due to API issues (not AI failures)
+  const resetResult = await prisma.enrichedItem.updateMany({
+    where: {
+      status: "ERROR",
+      errorMessage: { contains: "404" },
+    },
+    data: {
+      status: "PENDING",
+      retryCount: 0,
+      errorMessage: null,
+    },
+  });
+  if (resetResult.count > 0) {
+    console.log(`[Enrich Job] Reset ${resetResult.count} items that failed due to API 404`);
+  }
+
   console.log("[Enrich Job] Authenticating with AM API...");
   await amAuth();
   console.log("[Enrich Job] Auth successful");

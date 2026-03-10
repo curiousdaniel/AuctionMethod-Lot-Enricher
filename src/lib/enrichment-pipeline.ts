@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { getItem, updateItem, getItemImageUrls } from "./amapi";
+import { updateItem } from "./amapi";
 import {
   analyzeImages,
   researchItem,
@@ -21,7 +21,10 @@ async function downloadImageAsBase64(
 ): Promise<{ data: string; mediaType: string } | null> {
   try {
     const response = await fetch(url);
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.log(`[Enrich] Image download failed (${response.status}) for ${url}`);
+      return null;
+    }
 
     const contentType = response.headers.get("content-type") ?? "image/jpeg";
     const arrayBuffer = await response.arrayBuffer();
@@ -30,7 +33,7 @@ async function downloadImageAsBase64(
     const mediaType = contentType.startsWith("image/") ? contentType.split(";")[0] : "image/jpeg";
     return { data: base64, mediaType };
   } catch (error) {
-    console.log(`Failed to download image ${url}:`, error);
+    console.log(`[Enrich] Failed to download image ${url}:`, error);
     return null;
   }
 }
@@ -51,71 +54,47 @@ export async function enrichItem(enrichedItemId: number): Promise<EnrichmentResu
   }
 
   try {
-    // Mark as PROCESSING
     await prisma.enrichedItem.update({
       where: { id: enrichedItemId },
       data: { status: "PROCESSING" },
     });
 
-    // Step 1: Fetch full item data from AM API
-    console.log(`[Enrich] Fetching item ${record.itemId} from auction ${record.auctionId}`);
-    let amItem;
-    try {
-      amItem = await getItem(record.auctionId, record.itemId);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      if (msg.includes("404")) {
-        await prisma.enrichedItem.update({
-          where: { id: enrichedItemId },
-          data: {
-            status: "SKIPPED",
-            errorMessage: "Item not found in AM API (404)",
-          },
-        });
-        return { success: false, itemId: enrichedItemId, error: "Item 404" };
-      }
-      throw error;
-    }
+    // Use item data already stored in DB from the auction scan
+    const rawTitle = record.rawTitle || "";
+    const rawDescription = record.rawDescription || "";
+    const rawImageUrls = record.rawImageUrls || [];
 
-    const rawTitle = amItem.title || "";
-    let rawDescription = amItem.description || "";
-    if (!rawDescription && amItem.update_and_special_terms) {
-      try {
-        const parsed = JSON.parse(String(amItem.update_and_special_terms));
-        rawDescription = parsed.item_description || "";
-      } catch { /* ignore */ }
-    }
-    const rawImageUrls = getItemImageUrls(amItem);
+    console.log(`[Enrich] Processing item ${record.itemId} from auction ${record.auctionId}`);
+    console.log(`[Enrich] Title: "${rawTitle}", Description length: ${rawDescription.length}, Images: ${rawImageUrls.length}`);
 
     await prisma.enrichedItem.update({
       where: { id: enrichedItemId },
-      data: {
-        rawTitle,
-        rawDescription,
-        rawImageUrls,
-        fetchedAt: new Date(),
-      },
+      data: { fetchedAt: new Date() },
     });
 
     // Step 2: Download and encode images (up to MAX_IMAGES)
-    console.log(`[Enrich] Downloading up to ${MAX_IMAGES} images for item ${record.itemId}`);
     const imageUrls = rawImageUrls.slice(0, MAX_IMAGES);
-    const downloadResults = await Promise.all(imageUrls.map(downloadImageAsBase64));
+    let researchNotes = "";
+
+    const downloadResults = imageUrls.length > 0
+      ? await Promise.all(imageUrls.map(downloadImageAsBase64))
+      : [];
     const images = downloadResults.filter(
       (r): r is { data: string; mediaType: string } => r !== null
     );
 
-    const imageFailures = imageUrls.length - images.length;
-    let researchNotes = "";
-    if (imageFailures > 0) {
-      researchNotes += `${imageFailures} of ${imageUrls.length} images failed to download. `;
-    }
-    if (images.length === 0 && rawImageUrls.length > 0) {
-      researchNotes += "All images failed to download — proceeding without visual analysis. ";
+    if (imageUrls.length > 0) {
+      const imageFailures = imageUrls.length - images.length;
+      if (imageFailures > 0) {
+        researchNotes += `${imageFailures} of ${imageUrls.length} images failed to download. `;
+      }
+      if (images.length === 0) {
+        researchNotes += "All images failed to download — proceeding without visual analysis. ";
+      }
     }
 
     // Step 3: Claude Vision Analysis
-    console.log(`[Enrich] Running vision analysis for item ${record.itemId}`);
+    console.log(`[Enrich] Running vision analysis (${images.length} images) for item ${record.itemId}`);
     let visionAnalysis: VisionAnalysis;
     if (images.length > 0) {
       visionAnalysis = await retryOnce(
@@ -164,7 +143,6 @@ export async function enrichItem(enrichedItemId: number): Promise<EnrichmentResu
     }
     researchNotes += copyResult.writingNotes ?? "";
 
-    // Save enrichment to DB
     await prisma.enrichedItem.update({
       where: { id: enrichedItemId },
       data: {
@@ -199,7 +177,6 @@ export async function enrichItem(enrichedItemId: number): Promise<EnrichmentResu
         `[Enrich] Failed to PATCH item ${record.itemId} back to AM API:`,
         patchError
       );
-      // Enrichment is not lost — stays as ENRICHED
     }
 
     console.log(`[Enrich] Successfully enriched item ${record.itemId}`);
