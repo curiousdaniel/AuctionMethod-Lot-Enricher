@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model EnrichedItem {
+  id            Int      @id @default(autoincrement())
+  auctionId     Int
+  itemId        Int
+  auctionTitle  String?
+  lotNumber     String?
+
+  status        EnrichStatus @default(PENDING)
+  fetchedAt     DateTime?
+  enrichedAt    DateTime?
+  writtenBackAt DateTime?
+  errorMessage  String?      @db.Text
+  retryCount    Int          @default(0)
+
+  rawTitle      String?   @db.Text
+  rawDescription String?  @db.Text
+  rawImageUrls  String[]
+
+  enrichedTitle  String?  @db.Text
+  enrichedDesc   String?  @db.Text
+  photoCaption   String?  @db.Text
+  suggestedValue String?
+  researchNotes  String?  @db.Text
+  webSourceUrls  String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([auctionId, itemId])
+  @@index([status])
+  @@index([auctionId])
+}
+
+enum EnrichStatus {
+  PENDING
+  PROCESSING
+  ENRICHED
+  WRITTEN
+  SKIPPED
+  ERROR
+}
+
+model AuctionScan {
+  id            Int       @id @default(autoincrement())
+  auctionId     Int       @unique
+  auctionTitle  String?
+  endsAt        DateTime?
+  lastScannedAt DateTime  @default(now())
+  itemCount     Int       @default(0)
+  updatedAt     DateTime  @updatedAt
+}
