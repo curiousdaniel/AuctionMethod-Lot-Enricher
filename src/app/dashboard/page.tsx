@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
+import { RunEnrichmentButton } from "./run-button";
 
 const STATUS_COLORS: Record<string, string> = {
   PENDING: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
@@ -88,9 +89,12 @@ export default async function DashboardPage({
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-8">
-        Enrichment Dashboard
-      </h1>
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
+          Enrichment Dashboard
+        </h1>
+        <RunEnrichmentButton />
+      </div>
 
       {/* Stats Bar */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
