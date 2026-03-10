@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { amAuth, getAllActiveAuctions, getAllItems } from "./amapi";
+import { amAuth, getAllActiveAuctions, getAllItems, getItemImageUrls } from "./amapi";
 import { runEnrichmentBatch } from "./enrichment-pipeline";
 
 export interface EnrichmentJobResult {
@@ -33,10 +33,11 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
   console.log(`[Enrich Job] Found ${auctions.length} active/upcoming auctions`);
 
   for (const auction of auctions) {
+    const auctionIdNum = parseInt(String(auction.id), 10);
     await prisma.auctionScan.upsert({
-      where: { auctionId: auction.id },
+      where: { auctionId: auctionIdNum },
       create: {
-        auctionId: auction.id,
+        auctionId: auctionIdNum,
         auctionTitle: auction.title,
         endsAt: auction.ends ? new Date(auction.ends) : null,
         lastScannedAt: new Date(),
@@ -52,36 +53,49 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
 
   let newItemsQueued = 0;
   for (const auction of auctions) {
+    const auctionIdNum = parseInt(String(auction.id), 10);
     console.log(`[Enrich Job] Scanning auction ${auction.id}: "${auction.title}"`);
 
-    const items = await getAllItems(auction.id);
+    const items = await getAllItems(auctionIdNum);
     console.log(`[Enrich Job] Found ${items.length} items in auction ${auction.id}`);
 
     await prisma.auctionScan.update({
-      where: { auctionId: auction.id },
+      where: { auctionId: auctionIdNum },
       data: { itemCount: items.length },
     });
 
     for (const item of items) {
+      const itemIdNum = parseInt(String(item.id), 10);
       const existing = await prisma.enrichedItem.findUnique({
         where: {
           auctionId_itemId: {
-            auctionId: auction.id,
-            itemId: item.id,
+            auctionId: auctionIdNum,
+            itemId: itemIdNum,
           },
         },
       });
 
       if (!existing) {
+        const imageUrls = getItemImageUrls(item);
+        const description = item.description ||
+          (item.update_and_special_terms
+            ? (() => {
+                try {
+                  const parsed = JSON.parse(String(item.update_and_special_terms));
+                  return parsed.item_description || "";
+                } catch { return ""; }
+              })()
+            : "");
+
         await prisma.enrichedItem.create({
           data: {
-            auctionId: auction.id,
-            itemId: item.id,
+            auctionId: auctionIdNum,
+            itemId: itemIdNum,
             auctionTitle: auction.title,
             lotNumber: item.lot_number,
             rawTitle: item.title,
-            rawDescription: item.description,
-            rawImageUrls: (item.images ?? []).map((img) => img.url),
+            rawDescription: description,
+            rawImageUrls: imageUrls,
             status: "PENDING",
           },
         });

@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { getItem, updateItem } from "./amapi";
+import { getItem, updateItem, getItemImageUrls } from "./amapi";
 import {
   analyzeImages,
   researchItem,
@@ -78,8 +78,14 @@ export async function enrichItem(enrichedItemId: number): Promise<EnrichmentResu
     }
 
     const rawTitle = amItem.title || "";
-    const rawDescription = amItem.description || "";
-    const rawImageUrls = (amItem.images ?? []).map((img) => img.url);
+    let rawDescription = amItem.description || "";
+    if (!rawDescription && amItem.update_and_special_terms) {
+      try {
+        const parsed = JSON.parse(String(amItem.update_and_special_terms));
+        rawDescription = parsed.item_description || "";
+      } catch { /* ignore */ }
+    }
+    const rawImageUrls = getItemImageUrls(amItem);
 
     await prisma.enrichedItem.update({
       where: { id: enrichedItemId },

@@ -1,26 +1,24 @@
 export interface AMAuction {
-  id: number;
+  id: string;
   title: string;
   description: string;
   starts: string;
   ends: string;
-  published: number;
   status: string;
+  archived: string;
+  items?: AMItem[];
   [key: string]: unknown;
 }
 
-export interface AMItemImage {
-  url: string;
-  thumb_url: string;
-}
-
 export interface AMItem {
-  id: number;
-  auction_id: number;
+  id: string;
+  auction_id?: string;
   title: string;
   description: string;
   lot_number: string;
-  images: AMItemImage[];
+  lead_image: string | false;
+  lead_image_thumb: string | false;
+  images?: { url: string; thumb_url: string }[];
   [key: string]: unknown;
 }
 
@@ -36,6 +34,27 @@ function getBaseUrl(): string {
   const domain = process.env.AM_DOMAIN;
   if (!domain) throw new Error("AM_DOMAIN environment variable is not set");
   return `https://${domain}`;
+}
+
+function imageUrlsFromItem(item: AMItem): string[] {
+  const baseUrl = getBaseUrl();
+  const urls: string[] = [];
+
+  if (item.images && Array.isArray(item.images) && item.images.length > 0) {
+    for (const img of item.images) {
+      if (img.url) urls.push(img.url.startsWith("http") ? img.url : `${baseUrl}/${img.url}`);
+    }
+  }
+
+  if (urls.length === 0 && item.lead_image && typeof item.lead_image === "string") {
+    urls.push(item.lead_image.startsWith("http") ? item.lead_image : `${baseUrl}/${item.lead_image}`);
+  }
+
+  return urls;
+}
+
+export function getItemImageUrls(item: AMItem): string[] {
+  return imageUrlsFromItem(item);
 }
 
 export async function amAuth(): Promise<string> {
@@ -69,7 +88,6 @@ export async function amAuth(): Promise<string> {
     );
   }
 
-  // Cache for 20 hours (tokens last ~24h)
   tokenExpiresAt = Date.now() + 20 * 60 * 60 * 1000;
   return cachedToken;
 }
@@ -86,7 +104,6 @@ async function amFetch(path: string, options: RequestInit = {}): Promise<Respons
     },
   });
 
-  // Re-auth on 401 and retry once
   if (res.status === 401) {
     cachedToken = null;
     tokenExpiresAt = 0;
@@ -124,30 +141,29 @@ export async function getAuctionsPage(
 
   console.log(`[AM API] Raw auctions page: offset=${offset}, got ${auctions.length} auctions`);
   if (auctions.length > 0 && offset === 0) {
-    console.log("[AM API] Sample auction keys:", Object.keys(auctions[0]));
-    console.log("[AM API] Sample auction:", JSON.stringify(auctions[0], null, 2));
+    console.log("[AM API] First auction:", JSON.stringify({
+      id: auctions[0].id,
+      title: auctions[0].title,
+      status: auctions[0].status,
+      archived: auctions[0].archived,
+      starts: auctions[0].starts,
+      ends: auctions[0].ends,
+    }));
   }
 
   const now = new Date();
   const filtered = auctions.filter((a) => {
+    // AM API uses status "1" for active auctions
+    const isActive = a.status === "1" || a.status === "active";
+    const isNotArchived = a.archived !== "1";
+
     const ends = a.ends ? new Date(a.ends) : null;
     const hasNotEnded = !ends || ends > now;
 
-    const pub: unknown = a.published ?? (a as Record<string, unknown>).is_published;
-    const isPublished = pub === 1 || pub === true || pub === "1";
-
-    const isActiveStatus =
-      !a.status ||
-      a.status === "active" ||
-      a.status === "upcoming" ||
-      a.status === "open" ||
-      a.status === "published" ||
-      a.status === "live";
-
-    const passes = hasNotEnded && (isPublished || isActiveStatus);
+    const passes = isActive && isNotArchived && hasNotEnded;
     if (!passes) {
       console.log(
-        `[AM API] Filtered out auction ${a.id} "${a.title}" — ends: ${a.ends}, published: ${pub}, status: ${a.status}`
+        `[AM API] Skipped auction ${a.id} "${a.title}" — status: ${a.status}, archived: ${a.archived}, ends: ${a.ends}, ended: ${ends && ends <= now}`
       );
     }
     return passes;
@@ -191,9 +207,14 @@ export async function getItems(
   const data = await res.json();
   const items: AMItem[] = Array.isArray(data) ? data : data.items ?? data.data ?? [];
 
+  console.log(`[AM API] Items for auction ${auctionId}: got ${items.length}`);
+  if (items.length > 0) {
+    console.log("[AM API] Sample item keys:", Object.keys(items[0]).join(", "));
+  }
+
   return items.map((item) => ({
     ...item,
-    auction_id: item.auction_id ?? auctionId,
+    auction_id: item.auction_id ?? String(auctionId),
   }));
 }
 
@@ -222,7 +243,8 @@ export async function getItem(auctionId: number, itemId: number): Promise<AMItem
   }
 
   const data = await res.json();
-  return { ...data, auction_id: data.auction_id ?? auctionId };
+  const item = data.item ?? data;
+  return { ...item, auction_id: item.auction_id ?? String(auctionId) };
 }
 
 export async function updateItem(
