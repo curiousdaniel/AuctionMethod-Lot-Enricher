@@ -37,12 +37,9 @@ function extractDescription(item: AMItem): string {
 export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
   validateEnvVars();
 
-  // Reset any ERROR items that failed due to API issues (not AI failures)
+  // Reset ALL error items so they can be re-processed with fixed pipeline
   const resetResult = await prisma.enrichedItem.updateMany({
-    where: {
-      status: "ERROR",
-      errorMessage: { contains: "404" },
-    },
+    where: { status: "ERROR" },
     data: {
       status: "PENDING",
       retryCount: 0,
@@ -50,8 +47,16 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
     },
   });
   if (resetResult.count > 0) {
-    console.log(`[Enrich Job] Reset ${resetResult.count} items that failed due to API 404`);
+    console.log(`[Enrich Job] Reset ${resetResult.count} error items to PENDING`);
   }
+
+  // Clean up stale auction scans for auctions that have ended
+  const now = new Date();
+  await prisma.auctionScan.deleteMany({
+    where: {
+      endsAt: { lt: now },
+    },
+  });
 
   console.log("[Enrich Job] Authenticating with AM API...");
   await amAuth();
@@ -66,7 +71,6 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
     const auctionIdNum = parseInt(String(auction.id), 10);
     console.log(`[Enrich Job] Scanning auction ${auction.id}: "${auction.title}"`);
 
-    // Items are embedded in the auction response
     const items: AMItem[] = auction.items ?? [];
     console.log(`[Enrich Job] Auction ${auction.id} has ${items.length} embedded items`);
 
@@ -89,6 +93,9 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
 
     for (const item of items) {
       const itemIdNum = parseInt(String(item.id), 10);
+      const imageUrls = getItemImageUrls(item);
+      const description = extractDescription(item);
+
       const existing = await prisma.enrichedItem.findUnique({
         where: {
           auctionId_itemId: {
@@ -99,9 +106,6 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
       });
 
       if (!existing) {
-        const imageUrls = getItemImageUrls(item);
-        const description = extractDescription(item);
-
         await prisma.enrichedItem.create({
           data: {
             auctionId: auctionIdNum,
@@ -115,6 +119,18 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
           },
         });
         newItemsQueued++;
+      } else if (!existing.rawTitle && item.title) {
+        // Backfill missing data on existing records
+        console.log(`[Enrich Job] Backfilling data for item ${itemIdNum} (was empty)`);
+        await prisma.enrichedItem.update({
+          where: { id: existing.id },
+          data: {
+            rawTitle: item.title,
+            rawDescription: description || existing.rawDescription,
+            rawImageUrls: imageUrls.length > 0 ? imageUrls : existing.rawImageUrls,
+            lotNumber: item.lot_number || existing.lotNumber,
+          },
+        });
       }
     }
   }
