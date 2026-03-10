@@ -61,9 +61,12 @@ export async function amAuth(): Promise<string> {
   }
 
   const data = await res.json();
+  console.log("[AM API] Auth response keys:", Object.keys(data));
   cachedToken = data.token ?? data.access_token ?? data.bearer;
   if (!cachedToken) {
-    throw new Error("AM API auth response did not contain a token");
+    throw new Error(
+      `AM API auth response did not contain a token. Keys received: ${Object.keys(data).join(", ")}`
+    );
   }
 
   // Cache for 20 hours (tokens last ~24h)
@@ -102,10 +105,15 @@ async function amFetch(path: string, options: RequestInit = {}): Promise<Respons
   return res;
 }
 
-export async function getAuctions(
+export interface RawAuctionsPage {
+  raw: AMAuction[];
+  filtered: AMAuction[];
+}
+
+export async function getAuctionsPage(
   offset: number = 0,
   limit: number = 50
-): Promise<AMAuction[]> {
+): Promise<RawAuctionsPage> {
   const res = await amFetch(`/amapi/admin/auctions?offset=${offset}&limit=${limit}`);
   if (!res.ok) {
     throw new Error(`Failed to fetch auctions (${res.status}): ${await res.text()}`);
@@ -114,11 +122,39 @@ export async function getAuctions(
   const data = await res.json();
   const auctions: AMAuction[] = Array.isArray(data) ? data : data.auctions ?? data.data ?? [];
 
+  console.log(`[AM API] Raw auctions page: offset=${offset}, got ${auctions.length} auctions`);
+  if (auctions.length > 0 && offset === 0) {
+    console.log("[AM API] Sample auction keys:", Object.keys(auctions[0]));
+    console.log("[AM API] Sample auction:", JSON.stringify(auctions[0], null, 2));
+  }
+
   const now = new Date();
-  return auctions.filter((a) => {
-    const ends = new Date(a.ends);
-    return ends > now && (a.published === 1 || a.status === "active" || a.status === "upcoming");
+  const filtered = auctions.filter((a) => {
+    const ends = a.ends ? new Date(a.ends) : null;
+    const hasNotEnded = !ends || ends > now;
+
+    const pub: unknown = a.published ?? (a as Record<string, unknown>).is_published;
+    const isPublished = pub === 1 || pub === true || pub === "1";
+
+    const isActiveStatus =
+      !a.status ||
+      a.status === "active" ||
+      a.status === "upcoming" ||
+      a.status === "open" ||
+      a.status === "published" ||
+      a.status === "live";
+
+    const passes = hasNotEnded && (isPublished || isActiveStatus);
+    if (!passes) {
+      console.log(
+        `[AM API] Filtered out auction ${a.id} "${a.title}" — ends: ${a.ends}, published: ${pub}, status: ${a.status}`
+      );
+    }
+    return passes;
   });
+
+  console.log(`[AM API] After filtering: ${filtered.length} of ${auctions.length} kept`);
+  return { raw: auctions, filtered };
 }
 
 export async function getAllActiveAuctions(): Promise<AMAuction[]> {
@@ -128,12 +164,13 @@ export async function getAllActiveAuctions(): Promise<AMAuction[]> {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const batch = await getAuctions(offset, limit);
-    all.push(...batch);
-    if (batch.length < limit) break;
+    const page = await getAuctionsPage(offset, limit);
+    all.push(...page.filtered);
+    if (page.raw.length < limit) break;
     offset += limit;
   }
 
+  console.log(`[AM API] Total active auctions across all pages: ${all.length}`);
   return all;
 }
 
