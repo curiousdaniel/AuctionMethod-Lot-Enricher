@@ -151,8 +151,17 @@ export async function getAuctionsPage(
   limit: number = 50
 ): Promise<RawAuctionsPage> {
   const res = await amFetch(`/amapi/admin/auctions?offset=${offset}&limit=${limit}`);
+  const contentType = res.headers.get("content-type") ?? "";
+
   if (!res.ok) {
-    throw new Error(`Failed to fetch auctions (${res.status}): ${await res.text()}`);
+    const text = await res.text();
+    throw new Error(`Failed to fetch auctions (${res.status}): ${text.substring(0, 300)}`);
+  }
+
+  if (!contentType.includes("application/json")) {
+    const text = await res.text();
+    console.log(`[AM API] Auctions endpoint returned non-JSON (${contentType}): ${text.substring(0, 300)}`);
+    throw new Error(`Auctions endpoint returned ${contentType} instead of JSON. Body: ${text.substring(0, 200)}`);
   }
 
   const data = await res.json();

@@ -1,8 +1,29 @@
 import { NextResponse } from "next/server";
-import { amAuth, getItems, getItemImageUrls, getAllActiveAuctions, type AMItem } from "@/lib/amapi";
+import { amAuth, getItems, getItemImageUrls, type AMItem } from "@/lib/amapi";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
+
+async function safeFetch(url: string, headers: Record<string, string>) {
+  const res = await fetch(url, { headers });
+  const contentType = res.headers.get("content-type") ?? "";
+  const text = await res.text();
+
+  let json = null;
+  if (contentType.includes("application/json")) {
+    try { json = JSON.parse(text); } catch { /* not valid json */ }
+  }
+
+  return {
+    httpStatus: res.status,
+    contentType,
+    isJson: json !== null,
+    json,
+    textPreview: text.substring(0, 500),
+    redirected: res.redirected,
+    finalUrl: res.url,
+  };
+}
 
 export async function GET() {
   const domain = process.env.AM_DOMAIN;
@@ -18,48 +39,42 @@ export async function GET() {
   };
 
   if (!domain || !email || !password) {
-    results.error = "Missing required env vars";
     return NextResponse.json(results, { status: 500 });
   }
 
-  // Step 1: Auth (uses automatic retry)
+  const baseUrl = `https://${domain}`;
+
+  // Step 1: Auth
+  let token: string;
   try {
-    const token = await amAuth();
-    results.auth = { ok: true, tokenLength: token.length };
+    token = await amAuth();
+    results.auth = { ok: true, tokenLength: token.length, tokenPreview: token.substring(0, 20) + "..." };
   } catch (e) {
     results.auth = { ok: false, error: e instanceof Error ? e.message : String(e) };
     return NextResponse.json(results);
   }
 
-  // Step 2: Auctions (uses amFetch with auto-renewal on 401)
-  try {
-    const auctions = await getAllActiveAuctions();
-    const a36 = auctions.find((a) => String(a.id) === "36");
-    const embeddedItems: AMItem[] = a36?.items ?? [];
+  const authHeaders = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`,
+  };
 
-    results.auctions = {
-      activeCount: auctions.length,
-      auction36: a36 ? {
-        title: a36.title,
-        ends: a36.ends,
-        embeddedItemCount: embeddedItems.length,
-        embeddedSample: embeddedItems.length > 0 ? {
-          id: embeddedItems[0].id,
-          title: embeddedItems[0].title,
-          lead_image: embeddedItems[0].lead_image,
-          images: embeddedItems[0].images,
-          resolvedUrls: getItemImageUrls(embeddedItems[0]),
-        } : null,
-      } : "not found",
-    };
-  } catch (e) {
-    results.auctions = { error: e instanceof Error ? e.message : String(e) };
-  }
+  // Step 2: Raw test of auctions endpoint (shows HTTP status, content-type, raw body)
+  results.auctionsRaw = await safeFetch(
+    `${baseUrl}/amapi/admin/auctions?offset=0&limit=5`,
+    authHeaders
+  );
 
-  // Step 3: Items endpoint (uses amFetch with auto-renewal on 401)
+  // Step 3: Raw test of items endpoint for auction 36
+  results.itemsRaw = await safeFetch(
+    `${baseUrl}/amapi/admin/items/auction/36?limit=5&offset=0`,
+    authHeaders
+  );
+
+  // Step 4: Test items via the getItems() function (amFetch with auto-retry)
   try {
     const items = await getItems(36);
-    results.itemsEndpoint = {
+    results.itemsViaFunction = {
       count: items.length,
       sample: items.length > 0 ? {
         id: items[0].id,
@@ -71,19 +86,32 @@ export async function GET() {
       } : null,
     };
   } catch (e) {
-    results.itemsEndpoint = { error: e instanceof Error ? e.message : String(e) };
+    results.itemsViaFunction = { error: e instanceof Error ? e.message : String(e) };
   }
 
-  // Step 4: DB state
+  // Step 5: Also try a different auction that might have items
   try {
-    results.dbItems = await prisma.enrichedItem.findMany({
-      where: { auctionId: 36 },
+    const items33 = await getItems(33);
+    const items35 = await getItems(35);
+    results.otherAuctions = {
+      auction33: { count: items33.length },
+      auction35: { count: items35.length },
+    };
+  } catch (e) {
+    results.otherAuctions = { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  // Step 6: DB state
+  try {
+    const total = await prisma.enrichedItem.count();
+    const items = await prisma.enrichedItem.findMany({
       take: 5,
       orderBy: { id: "asc" },
-      select: { id: true, itemId: true, rawTitle: true, rawImageUrls: true, status: true },
+      select: { id: true, auctionId: true, itemId: true, rawTitle: true, rawImageUrls: true, status: true },
     });
+    results.db = { totalItems: total, sample: items };
   } catch (e) {
-    results.dbItems = { error: e instanceof Error ? e.message : String(e) };
+    results.db = { error: e instanceof Error ? e.message : String(e) };
   }
 
   return NextResponse.json(results);
