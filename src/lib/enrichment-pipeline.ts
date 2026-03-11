@@ -209,7 +209,7 @@ export async function runEnrichmentBatch(): Promise<{
   skipped: number;
   auctionsScanned: number;
 }> {
-  const batchSize = parseInt(process.env.ENRICHMENT_BATCH_SIZE ?? "2", 10);
+  const batchSize = parseInt(process.env.ENRICHMENT_BATCH_SIZE ?? "5", 10);
   const minDelay = parseInt(process.env.ENRICHMENT_MIN_DELAY_MS ?? "1000", 10);
 
   const pendingItems = await prisma.enrichedItem.findMany({
