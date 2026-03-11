@@ -14,77 +14,94 @@ export async function GET() {
     const token = await amAuth();
     const baseUrl = `https://${domain}`;
 
-    const res = await fetch(`${baseUrl}/amapi/admin/auctions?offset=0&limit=50`, {
+    // Get auction 36 (DANIEL ENRICHMENT TEST)
+    const auctionRes = await fetch(`${baseUrl}/amapi/admin/auctions?offset=0&limit=50`, {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
     });
+    const auctionData = await auctionRes.json();
+    const auctions = auctionData.auctions ?? [];
+    const testAuction = auctions.find((a: Record<string, unknown>) => String(a.id) === "36");
 
-    const data = await res.json();
-    const auctions = data.auctions ?? data.data ?? [];
-
-    // Show a summary of ALL auctions with their key fields
-    const auctionSummaries = auctions.map((a: Record<string, unknown>) => ({
-      id: a.id,
-      title: a.title,
-      status: a.status,
-      archived: a.archived,
-      starts: a.starts,
-      ends: a.ends,
-      itemCount: Array.isArray(a.items) ? (a.items as unknown[]).length : 0,
-    }));
-
-    // Find the test auction (or any with future ends)
-    const now = new Date();
-    const testAuction = auctions.find(
-      (a: Record<string, unknown>) =>
-        a.ends && new Date(a.ends as string) > now
-    );
-
-    // Show first item from test auction if found
-    let sampleItem = null;
-    if (testAuction && Array.isArray(testAuction.items) && testAuction.items.length > 0) {
+    // Get first item's full data
+    let firstItem = null;
+    let itemImageFields = null;
+    if (testAuction?.items?.[0]) {
       const item = testAuction.items[0];
-      sampleItem = {
+      firstItem = {
         id: item.id,
         title: item.title,
-        lot_number: item.lot_number,
-        description: item.description,
         lead_image: item.lead_image,
         lead_image_thumb: item.lead_image_thumb,
         image_url: item.image_url,
         thumb_url: item.thumb_url,
-        update_and_special_terms: item.update_and_special_terms,
-        allKeys: Object.keys(item),
+        images: item.images,
       };
+      // Collect all keys that contain "image" or "photo" or "img"
+      itemImageFields = Object.keys(item).filter(
+        (k: string) => /image|photo|img|picture|media/i.test(k)
+      );
     }
 
-    // Show DB state of error items
-    const errorItems = await prisma.enrichedItem.findMany({
-      where: { status: "ERROR" },
+    // Try fetching item images via different endpoints
+    const itemId = testAuction?.items?.[0]?.id;
+    const endpoints = [
+      `/amapi/admin/items/auction/36/item/${itemId}`,
+      `/amapi/admin/items/${itemId}/images`,
+      `/amapi/admin/items/auction/36/item/${itemId}/images`,
+      `/amapi/admin/auctions/36/items/${itemId}/images`,
+    ];
+
+    const endpointResults: Record<string, unknown> = {};
+    for (const ep of endpoints) {
+      try {
+        const r = await fetch(`${baseUrl}${ep}`, {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const text = await r.text();
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch { /* not json */ }
+        endpointResults[ep] = {
+          status: r.status,
+          isJson: parsed !== null,
+          preview: parsed
+            ? (typeof parsed === "object" && parsed !== null
+              ? Object.keys(parsed as Record<string, unknown>)
+              : String(parsed).substring(0, 200))
+            : text.substring(0, 200),
+          // If this is the single item endpoint and it has image data, show it
+          ...(parsed && r.ok ? { imageFields: findImageData(parsed) } : {}),
+        };
+      } catch (e) {
+        endpointResults[ep] = { error: String(e) };
+      }
+    }
+
+    // Check DB state
+    const dbItems = await prisma.enrichedItem.findMany({
+      where: { auctionId: 36 },
       take: 3,
+      orderBy: { id: "asc" },
       select: {
         id: true,
         itemId: true,
-        auctionId: true,
         rawTitle: true,
-        rawDescription: true,
         rawImageUrls: true,
-        errorMessage: true,
-        retryCount: true,
         status: true,
+        errorMessage: true,
       },
     });
 
     return NextResponse.json({
-      totalAuctions: auctions.length,
-      auctionSummaries,
-      testAuction: testAuction
-        ? { id: testAuction.id, title: testAuction.title, ends: testAuction.ends }
-        : null,
-      sampleItem,
-      errorItemsInDb: errorItems,
+      firstItemFromApi: firstItem,
+      itemImageFields,
+      endpointResults,
+      dbItems,
     });
   } catch (err) {
     return NextResponse.json(
@@ -92,4 +109,15 @@ export async function GET() {
       { status: 500 }
     );
   }
+}
+
+function findImageData(obj: unknown): Record<string, unknown> | null {
+  if (!obj || typeof obj !== "object") return null;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (/image|photo|img|picture|media|lead_image/i.test(key)) {
+      result[key] = value;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
 }
