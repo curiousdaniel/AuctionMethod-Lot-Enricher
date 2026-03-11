@@ -5,6 +5,7 @@ import { runEnrichmentBatch } from "./enrichment-pipeline";
 export interface EnrichmentJobResult {
   auctionsScanned: number;
   newItemsQueued: number;
+  requeued: number;
   processed: number;
   succeeded: number;
   errors: number;
@@ -67,6 +68,7 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
   console.log(`[Enrich Job] Found ${auctions.length} active/upcoming auctions`);
 
   let newItemsQueued = 0;
+  let requeued = 0;
   for (const auction of auctions) {
     const auctionIdNum = parseInt(String(auction.id), 10);
     console.log(`[Enrich Job] Scanning auction ${auction.id}: "${auction.title}"`);
@@ -125,8 +127,9 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
         newItemsQueued++;
         console.log(`[Enrich Job] Queued item ${itemIdNum}: "${item.title}" (${imageUrls.length} images)`);
       } else if (existing.rawImageUrls.length === 0 && imageUrls.length > 0) {
-        // Backfill images on existing records that were created without them
-        console.log(`[Enrich Job] Backfilling ${imageUrls.length} images for item ${itemIdNum}`);
+        // Backfill images AND reset to PENDING so item re-enriches with vision analysis
+        const needsReEnrich = ["ENRICHED", "WRITTEN", "ERROR"].includes(existing.status);
+        console.log(`[Enrich Job] Backfilling ${imageUrls.length} images for item ${itemIdNum}${needsReEnrich ? " — resetting to PENDING for re-enrichment" : ""}`);
         await prisma.enrichedItem.update({
           where: { id: existing.id },
           data: {
@@ -134,19 +137,33 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
             rawTitle: item.title || existing.rawTitle,
             rawDescription: description || existing.rawDescription,
             lotNumber: item.lot_number || existing.lotNumber,
+            ...(needsReEnrich ? {
+              status: "PENDING",
+              enrichedTitle: null,
+              enrichedDesc: null,
+              photoCaption: null,
+              suggestedValue: null,
+              researchNotes: null,
+              enrichedAt: null,
+              writtenBackAt: null,
+              errorMessage: null,
+              retryCount: 0,
+            } : {}),
           },
         });
+        if (needsReEnrich) requeued++;
       }
     }
   }
 
-  console.log(`[Enrich Job] Queued ${newItemsQueued} new items for enrichment`);
+  console.log(`[Enrich Job] Queued ${newItemsQueued} new, ${requeued} re-queued for re-enrichment`);
   console.log("[Enrich Job] Starting enrichment batch...");
   const result = await runEnrichmentBatch();
 
   return {
     auctionsScanned: auctions.length,
     newItemsQueued,
+    requeued,
     processed: result.processed,
     succeeded: result.succeeded,
     errors: result.errors,
