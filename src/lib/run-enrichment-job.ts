@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { amAuth, getAllActiveAuctions, getItemImageUrls, type AMItem } from "./amapi";
+import { amAuth, getAllActiveAuctions, getAllItems, getItemImageUrls, type AMItem } from "./amapi";
 import { runEnrichmentBatch } from "./enrichment-pipeline";
 
 export interface EnrichmentJobResult {
@@ -71,8 +71,12 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
     const auctionIdNum = parseInt(String(auction.id), 10);
     console.log(`[Enrich Job] Scanning auction ${auction.id}: "${auction.title}"`);
 
-    const items: AMItem[] = auction.items ?? [];
-    console.log(`[Enrich Job] Auction ${auction.id} has ${items.length} embedded items`);
+    // Fetch items via the proper items endpoint (includes full images array)
+    const items = await getAllItems(auctionIdNum);
+
+    // Fall back to embedded items if the items endpoint returned nothing
+    const itemsToProcess: AMItem[] = items.length > 0 ? items : (auction.items ?? []);
+    console.log(`[Enrich Job] Auction ${auction.id}: ${itemsToProcess.length} items (source: ${items.length > 0 ? "items endpoint" : "embedded"})`);
 
     await prisma.auctionScan.upsert({
       where: { auctionId: auctionIdNum },
@@ -81,17 +85,17 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
         auctionTitle: auction.title,
         endsAt: auction.ends ? new Date(auction.ends) : null,
         lastScannedAt: new Date(),
-        itemCount: items.length,
+        itemCount: itemsToProcess.length,
       },
       update: {
         auctionTitle: auction.title,
         endsAt: auction.ends ? new Date(auction.ends) : null,
         lastScannedAt: new Date(),
-        itemCount: items.length,
+        itemCount: itemsToProcess.length,
       },
     });
 
-    for (const item of items) {
+    for (const item of itemsToProcess) {
       const itemIdNum = parseInt(String(item.id), 10);
       const imageUrls = getItemImageUrls(item);
       const description = extractDescription(item);
@@ -119,15 +123,16 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
           },
         });
         newItemsQueued++;
-      } else if (!existing.rawTitle && item.title) {
-        // Backfill missing data on existing records
-        console.log(`[Enrich Job] Backfilling data for item ${itemIdNum} (was empty)`);
+        console.log(`[Enrich Job] Queued item ${itemIdNum}: "${item.title}" (${imageUrls.length} images)`);
+      } else if (existing.rawImageUrls.length === 0 && imageUrls.length > 0) {
+        // Backfill images on existing records that were created without them
+        console.log(`[Enrich Job] Backfilling ${imageUrls.length} images for item ${itemIdNum}`);
         await prisma.enrichedItem.update({
           where: { id: existing.id },
           data: {
-            rawTitle: item.title,
+            rawImageUrls: imageUrls,
+            rawTitle: item.title || existing.rawTitle,
             rawDescription: description || existing.rawDescription,
-            rawImageUrls: imageUrls.length > 0 ? imageUrls : existing.rawImageUrls,
             lotNumber: item.lot_number || existing.lotNumber,
           },
         });

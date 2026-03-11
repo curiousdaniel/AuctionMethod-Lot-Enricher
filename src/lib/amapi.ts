@@ -18,7 +18,8 @@ export interface AMItem {
   lot_number: string;
   lead_image: string | false;
   lead_image_thumb: string | false;
-  images?: { url: string; thumb_url: string }[];
+  images?: string[];
+  picture_count?: number;
   [key: string]: unknown;
 }
 
@@ -36,25 +37,30 @@ function getBaseUrl(): string {
   return `https://${domain}`;
 }
 
-function imageUrlsFromItem(item: AMItem): string[] {
+export function getItemImageUrls(item: AMItem): string[] {
   const baseUrl = getBaseUrl();
   const urls: string[] = [];
 
+  // The items endpoint returns images as a string array of URLs
   if (item.images && Array.isArray(item.images) && item.images.length > 0) {
     for (const img of item.images) {
-      if (img.url) urls.push(img.url.startsWith("http") ? img.url : `${baseUrl}/${img.url}`);
+      if (typeof img === "string" && img) {
+        urls.push(img.startsWith("http") ? img : `${baseUrl}/${img}`);
+      } else if (typeof img === "object" && img !== null) {
+        const imgObj = img as { url?: string; thumb_url?: string };
+        if (imgObj.url) {
+          urls.push(imgObj.url.startsWith("http") ? imgObj.url : `${baseUrl}/${imgObj.url}`);
+        }
+      }
     }
   }
 
+  // Fallback to lead_image from embedded auction data
   if (urls.length === 0 && item.lead_image && typeof item.lead_image === "string") {
     urls.push(item.lead_image.startsWith("http") ? item.lead_image : `${baseUrl}/${item.lead_image}`);
   }
 
   return urls;
-}
-
-export function getItemImageUrls(item: AMItem): string[] {
-  return imageUrlsFromItem(item);
 }
 
 export async function amAuth(): Promise<string> {
@@ -140,33 +146,14 @@ export async function getAuctionsPage(
   const auctions: AMAuction[] = Array.isArray(data) ? data : data.auctions ?? data.data ?? [];
 
   console.log(`[AM API] Raw auctions page: offset=${offset}, got ${auctions.length} auctions`);
-  if (auctions.length > 0 && offset === 0) {
-    console.log("[AM API] First auction:", JSON.stringify({
-      id: auctions[0].id,
-      title: auctions[0].title,
-      status: auctions[0].status,
-      archived: auctions[0].archived,
-      starts: auctions[0].starts,
-      ends: auctions[0].ends,
-    }));
-  }
 
   const now = new Date();
   const filtered = auctions.filter((a) => {
-    // AM API uses status "1" for active auctions
     const isActive = a.status === "1" || a.status === "active";
     const isNotArchived = a.archived !== "1";
-
     const ends = a.ends ? new Date(a.ends) : null;
     const hasNotEnded = !ends || ends > now;
-
-    const passes = isActive && isNotArchived && hasNotEnded;
-    if (!passes) {
-      console.log(
-        `[AM API] Skipped auction ${a.id} "${a.title}" — status: ${a.status}, archived: ${a.archived}, ends: ${a.ends}, ended: ${ends && ends <= now}`
-      );
-    }
-    return passes;
+    return isActive && isNotArchived && hasNotEnded;
   });
 
   console.log(`[AM API] After filtering: ${filtered.length} of ${auctions.length} kept`);
@@ -190,26 +177,29 @@ export async function getAllActiveAuctions(): Promise<AMAuction[]> {
   return all;
 }
 
+// Correct URL: /amapi/admin/items/auction/{auctionId} (path param, not query param)
 export async function getItems(
   auctionId: number,
   offset: number = 0,
   limit: number = 50
 ): Promise<AMItem[]> {
   const res = await amFetch(
-    `/amapi/admin/items?auction=${auctionId}&offset=${offset}&limit=${limit}`
+    `/amapi/admin/items/auction/${auctionId}?limit=${limit}&offset=${offset}`
   );
   if (!res.ok) {
-    throw new Error(
-      `Failed to fetch items for auction ${auctionId} (${res.status}): ${await res.text()}`
-    );
+    const text = await res.text();
+    console.log(`[AM API] Items endpoint for auction ${auctionId} returned ${res.status}: ${text.substring(0, 200)}`);
+    return [];
   }
 
   const data = await res.json();
-  const items: AMItem[] = Array.isArray(data) ? data : data.items ?? data.data ?? [];
+  // Response: { status, message, data: { items: [...] } }
+  const items: AMItem[] = data?.data?.items ?? data?.items ?? (Array.isArray(data) ? data : []);
 
   console.log(`[AM API] Items for auction ${auctionId}: got ${items.length}`);
   if (items.length > 0) {
-    console.log("[AM API] Sample item keys:", Object.keys(items[0]).join(", "));
+    const sample = items[0];
+    console.log(`[AM API] Sample item: id=${sample.id}, title="${sample.title}", images=${(sample.images ?? []).length}, picture_count=${sample.picture_count}`);
   }
 
   return items.map((item) => ({
@@ -243,7 +233,8 @@ export async function getItem(auctionId: number, itemId: number): Promise<AMItem
   }
 
   const data = await res.json();
-  const item = data.item ?? data;
+  // Response: { status, data: { items: [item] } }
+  const item = data?.data?.items?.[0] ?? data?.item ?? data;
   return { ...item, auction_id: item.auction_id ?? String(auctionId) };
 }
 
