@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { amAuth, getItemImageUrls, type AMItem } from "@/lib/amapi";
+import { clearTokenCache, amAuth, getItems, getItemImageUrls, getAllActiveAuctions, type AMItem } from "@/lib/amapi";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -11,56 +11,40 @@ export async function GET() {
   }
 
   try {
+    // Force fresh auth
+    clearTokenCache();
     const token = await amAuth();
-    const baseUrl = `https://${domain}`;
+    console.log("[Debug] Got fresh token, length:", token.length);
 
-    // 1. Get auctions (embedded items have lead_image only)
-    const auctionRes = await fetch(`${baseUrl}/amapi/admin/auctions?offset=0&limit=50`, {
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    });
-    const auctionData = await auctionRes.json();
-    const auctions = auctionData.auctions ?? [];
-    const testAuction = auctions.find((a: Record<string, unknown>) => String(a.id) === "36");
+    // 1. Get active auctions using proper amFetch flow
+    const auctions = await getAllActiveAuctions();
+    const testAuction = auctions.find((a) => String(a.id) === "36");
 
-    // 2. Fetch items via the proper items endpoint (should include full images array)
-    const itemsRes = await fetch(`${baseUrl}/amapi/admin/items/auction/36?limit=10&offset=0`, {
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    });
-    const itemsResText = await itemsRes.text();
-    let itemsEndpointData: Record<string, unknown> | null = null;
-    try { itemsEndpointData = JSON.parse(itemsResText); } catch { /* not json */ }
+    // 2. Get embedded items from auction 36
+    const embeddedItems: AMItem[] = testAuction?.items ?? [];
+    const embeddedSample = embeddedItems.length > 0 ? {
+      id: embeddedItems[0].id,
+      title: embeddedItems[0].title,
+      lead_image: embeddedItems[0].lead_image,
+      images: embeddedItems[0].images,
+      resolvedUrls: getItemImageUrls(embeddedItems[0]),
+    } : null;
 
-    const itemsFromEndpoint = (itemsEndpointData as Record<string, unknown>)?.data
-      ? ((itemsEndpointData as Record<string, unknown>).data as Record<string, unknown>)?.items
-      : (itemsEndpointData as Record<string, unknown>)?.items;
-    const itemsArray = Array.isArray(itemsFromEndpoint) ? itemsFromEndpoint : [];
+    // 3. Fetch items via proper items endpoint (uses amFetch with 401 retry)
+    const itemsFromEndpoint = await getItems(36);
+    const endpointSample = itemsFromEndpoint.length > 0 ? {
+      id: itemsFromEndpoint[0].id,
+      title: itemsFromEndpoint[0].title,
+      lead_image: itemsFromEndpoint[0].lead_image,
+      images: itemsFromEndpoint[0].images,
+      picture_count: itemsFromEndpoint[0].picture_count,
+      resolvedUrls: getItemImageUrls(itemsFromEndpoint[0]),
+      allImageKeys: Object.keys(itemsFromEndpoint[0]).filter(
+        (k) => /image|photo|img|picture|media/i.test(k)
+      ),
+    } : null;
 
-    // 3. Compare image data from both sources
-    const embeddedItems = testAuction?.items ?? [];
-    const comparison = [];
-    for (let i = 0; i < Math.min(3, Math.max(embeddedItems.length, itemsArray.length)); i++) {
-      const embedded = embeddedItems[i] as AMItem | undefined;
-      const fromEndpoint = itemsArray[i] as AMItem | undefined;
-
-      comparison.push({
-        itemId: embedded?.id ?? fromEndpoint?.id,
-        title: embedded?.title ?? fromEndpoint?.title,
-        embedded: embedded ? {
-          lead_image: embedded.lead_image,
-          lead_image_thumb: embedded.lead_image_thumb,
-          images: embedded.images,
-          resolvedUrls: getItemImageUrls(embedded),
-        } : null,
-        itemsEndpoint: fromEndpoint ? {
-          images: fromEndpoint.images,
-          picture_count: fromEndpoint.picture_count,
-          lead_image: fromEndpoint.lead_image,
-          resolvedUrls: getItemImageUrls(fromEndpoint as AMItem),
-        } : null,
-      });
-    }
-
-    // 4. DB state for this auction
+    // 4. DB state
     const dbItems = await prisma.enrichedItem.findMany({
       where: { auctionId: 36 },
       take: 5,
@@ -71,27 +55,25 @@ export async function GET() {
         rawTitle: true,
         rawImageUrls: true,
         status: true,
-        errorMessage: true,
       },
     });
 
     return NextResponse.json({
-      itemsEndpoint: {
-        url: `/amapi/admin/items/auction/36?limit=10&offset=0`,
-        httpStatus: itemsRes.status,
-        totalItems: itemsArray.length,
-        rawResponseKeys: itemsEndpointData ? Object.keys(itemsEndpointData) : null,
-        dataKeys: itemsEndpointData && typeof (itemsEndpointData as Record<string, unknown>).data === "object"
-          ? Object.keys((itemsEndpointData as Record<string, unknown>).data as Record<string, unknown>)
-          : null,
+      activeAuctions: auctions.length,
+      auction36Found: !!testAuction,
+      embedded: {
+        itemCount: embeddedItems.length,
+        sample: embeddedSample,
       },
-      embeddedItemCount: embeddedItems.length,
-      imageComparison: comparison,
+      itemsEndpoint: {
+        itemCount: itemsFromEndpoint.length,
+        sample: endpointSample,
+      },
       dbItems,
     });
   } catch (err) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined },
       { status: 500 }
     );
   }

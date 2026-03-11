@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { amAuth, getAllActiveAuctions, getAllItems, getItemImageUrls, type AMItem } from "./amapi";
+import { clearTokenCache, amAuth, getAllActiveAuctions, getAllItems, getItemImageUrls, type AMItem } from "./amapi";
 import { runEnrichmentBatch } from "./enrichment-pipeline";
 
 export interface EnrichmentJobResult {
@@ -59,7 +59,9 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
     },
   });
 
-  console.log("[Enrich Job] Authenticating with AM API...");
+  // Force fresh authentication at the start of every job
+  clearTokenCache();
+  console.log("[Enrich Job] Authenticating with AM API (fresh)...");
   await amAuth();
   console.log("[Enrich Job] Auth successful");
 
