@@ -62,65 +62,49 @@ export function getItemImageUrls(item: AMItem): string[] {
   return urls;
 }
 
-export function clearTokenCache(): void {
-  cachedToken = null;
-  tokenExpiresAt = 0;
-}
-
-export async function amAuth(): Promise<string> {
-  if (cachedToken && Date.now() < tokenExpiresAt) {
-    return cachedToken;
-  }
-
+async function freshAuth(): Promise<string> {
   const email = process.env.AM_EMAIL;
   const password = process.env.AM_PASSWORD;
   if (!email || !password) {
     throw new Error("AM_EMAIL and AM_PASSWORD environment variables are required");
   }
 
-  console.log("[AM API] Authenticating fresh...");
+  console.log("[AM API] Authenticating...");
   const res = await fetch(`${getBaseUrl()}/amapi/auth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`AM API auth failed (${res.status}): ${text}`);
+  const data = await res.json();
+
+  // Some APIs return HTTP 200 even on auth failure -- check body status too
+  if (!res.ok || data.status === "error") {
+    throw new Error(`AM API auth failed (HTTP ${res.status}): ${data.message ?? JSON.stringify(data)}`);
   }
 
-  const data = await res.json();
-  console.log("[AM API] Auth response keys:", Object.keys(data), "status:", data.status);
-  cachedToken = data.token ?? data.access_token ?? data.bearer;
-  if (!cachedToken) {
+  const token = data.token ?? data.access_token ?? data.bearer;
+  if (!token || typeof token !== "string") {
     throw new Error(
-      `AM API auth response did not contain a token. Keys received: ${Object.keys(data).join(", ")}`
+      `AM API auth response did not contain a token. Keys: ${Object.keys(data).join(", ")}`
     );
   }
 
-  tokenExpiresAt = Date.now() + 30 * 60 * 1000; // 30 minutes
-  return cachedToken;
+  console.log("[AM API] Auth successful, token length:", token.length);
+  cachedToken = token;
+  tokenExpiresAt = Date.now() + 5 * 60 * 1000; // cache 5 minutes only
+  return token;
+}
+
+export async function amAuth(): Promise<string> {
+  if (cachedToken && Date.now() < tokenExpiresAt) {
+    return cachedToken;
+  }
+  return freshAuth();
 }
 
 async function amFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  let token = await amAuth();
-
-  const res = await fetch(`${getBaseUrl()}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...options.headers,
-    },
-  });
-
-  if (res.status === 401) {
-    console.log(`[AM API] Got 401 on ${path}, re-authenticating...`);
-    cachedToken = null;
-    tokenExpiresAt = 0;
-    token = await amAuth();
-
+  const makeRequest = async (token: string) => {
     return fetch(`${getBaseUrl()}${path}`, {
       ...options,
       headers: {
@@ -129,6 +113,29 @@ async function amFetch(path: string, options: RequestInit = {}): Promise<Respons
         ...options.headers,
       },
     });
+  };
+
+  // Try with current token
+  let token = await amAuth();
+  let res = await makeRequest(token);
+
+  // On 401, get a completely fresh token and retry
+  if (res.status === 401) {
+    console.log(`[AM API] 401 on ${path} — renewing token...`);
+    cachedToken = null;
+    tokenExpiresAt = 0;
+    token = await freshAuth();
+    res = await makeRequest(token);
+
+    // If STILL 401, try one more time (some APIs need a moment)
+    if (res.status === 401) {
+      console.log(`[AM API] Still 401 on ${path} after re-auth — waiting 1s and retrying...`);
+      await new Promise((r) => setTimeout(r, 1000));
+      cachedToken = null;
+      tokenExpiresAt = 0;
+      token = await freshAuth();
+      res = await makeRequest(token);
+    }
   }
 
   return res;
@@ -189,8 +196,6 @@ export async function getItems(
   limit: number = 50
 ): Promise<AMItem[]> {
   const path = `/amapi/admin/items/auction/${auctionId}?limit=${limit}&offset=${offset}`;
-  console.log(`[AM API] Fetching items: ${path}`);
-
   const res = await amFetch(path);
 
   if (!res.ok) {
@@ -200,20 +205,12 @@ export async function getItems(
   }
 
   const data = await res.json();
-  console.log(`[AM API] Items response keys: ${JSON.stringify(Object.keys(data))}`);
-  if (data.data) {
-    console.log(`[AM API] Items data keys: ${JSON.stringify(Object.keys(data.data))}`);
-  }
-
   const items: AMItem[] = data?.data?.items ?? data?.items ?? (Array.isArray(data) ? data : []);
 
   console.log(`[AM API] Items for auction ${auctionId}: got ${items.length}`);
   if (items.length > 0) {
     const sample = items[0];
-    console.log(`[AM API] Sample item id=${sample.id}, title="${sample.title}"`);
-    console.log(`[AM API] Sample item images field: ${JSON.stringify(sample.images)}`);
-    console.log(`[AM API] Sample item picture_count: ${sample.picture_count}`);
-    console.log(`[AM API] Sample item lead_image: ${JSON.stringify(sample.lead_image)}`);
+    console.log(`[AM API] Sample item id=${sample.id}, images=${JSON.stringify(sample.images)}, lead_image=${JSON.stringify(sample.lead_image)}`);
     console.log(`[AM API] Resolved URLs: ${JSON.stringify(getItemImageUrls(sample))}`);
   }
 
