@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { amAuth, getItems, getItemImageUrls, type AMItem } from "@/lib/amapi";
+import { amAuth, getItems, getItem, getItemImageUrls, type AMItem } from "@/lib/amapi";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -44,7 +44,6 @@ export async function GET() {
 
   const baseUrl = `https://${domain}`;
 
-  // Step 1: Auth
   let token: string;
   try {
     token = await amAuth();
@@ -59,57 +58,108 @@ export async function GET() {
     "Authorization": `Bearer ${token}`,
   };
 
-  // Step 2: Raw test of auctions endpoint (shows HTTP status, content-type, raw body)
+  // Test bulk auctions endpoint
   results.auctionsRaw = await safeFetch(
     `${baseUrl}/amapi/admin/auctions?offset=0&limit=5`,
     authHeaders
   );
 
-  // Step 3: Raw test of items endpoint for auction 36
-  results.itemsRaw = await safeFetch(
-    `${baseUrl}/amapi/admin/items/auction/36?limit=5&offset=0`,
-    authHeaders
-  );
+  // Test bulk items endpoint for first available auction
+  let testAuctionId = 37;
+  let testItemId: number | null = null;
 
-  // Step 4: Test items via the getItems() function (amFetch with auto-retry)
   try {
-    const items = await getItems(36);
-    results.itemsViaFunction = {
-      count: items.length,
-      sample: items.length > 0 ? {
-        id: items[0].id,
-        title: items[0].title,
-        images: items[0].images,
-        picture_count: items[0].picture_count,
-        lead_image: items[0].lead_image,
-        resolvedUrls: getItemImageUrls(items[0] as AMItem),
-      } : null,
-    };
+    const bulkItems = await getItems(testAuctionId);
+    if (bulkItems.length === 0) {
+      const scans = await prisma.auctionScan.findMany({ take: 1, orderBy: { lastScannedAt: "desc" } });
+      if (scans.length > 0) {
+        testAuctionId = scans[0].auctionId;
+        const retryItems = await getItems(testAuctionId);
+        if (retryItems.length > 0) testItemId = parseInt(String(retryItems[0].id), 10);
+        results.bulkItemsEndpoint = {
+          auctionId: testAuctionId,
+          count: retryItems.length,
+          sample: retryItems.length > 0 ? {
+            id: retryItems[0].id,
+            title: retryItems[0].title,
+            images: retryItems[0].images,
+            picture_count: retryItems[0].picture_count,
+            lead_image: retryItems[0].lead_image,
+            resolvedUrls: getItemImageUrls(retryItems[0] as AMItem),
+            allKeys: Object.keys(retryItems[0]),
+          } : null,
+        };
+      }
+    } else {
+      testItemId = parseInt(String(bulkItems[0].id), 10);
+      results.bulkItemsEndpoint = {
+        auctionId: testAuctionId,
+        count: bulkItems.length,
+        sample: {
+          id: bulkItems[0].id,
+          title: bulkItems[0].title,
+          images: bulkItems[0].images,
+          picture_count: bulkItems[0].picture_count,
+          lead_image: bulkItems[0].lead_image,
+          resolvedUrls: getItemImageUrls(bulkItems[0] as AMItem),
+          allKeys: Object.keys(bulkItems[0]),
+        },
+      };
+    }
   } catch (e) {
-    results.itemsViaFunction = { error: e instanceof Error ? e.message : String(e) };
+    results.bulkItemsEndpoint = { error: e instanceof Error ? e.message : String(e) };
   }
 
-  // Step 5: Also try a different auction that might have items
-  try {
-    const items33 = await getItems(33);
-    const items35 = await getItems(35);
-    results.otherAuctions = {
-      auction33: { count: items33.length },
-      auction35: { count: items35.length },
-    };
-  } catch (e) {
-    results.otherAuctions = { error: e instanceof Error ? e.message : String(e) };
+  // Test SINGLE item endpoint (this is the one that should return full images)
+  if (testItemId) {
+    try {
+      const singleItem = await getItem(testAuctionId, testItemId);
+      const resolvedUrls = getItemImageUrls(singleItem);
+      results.singleItemEndpoint = {
+        auctionId: testAuctionId,
+        itemId: testItemId,
+        allKeys: Object.keys(singleItem),
+        title: singleItem.title,
+        images: singleItem.images,
+        imagesType: typeof singleItem.images,
+        imagesIsArray: Array.isArray(singleItem.images),
+        picture_count: singleItem.picture_count,
+        lead_image: singleItem.lead_image,
+        resolvedUrls,
+        resolvedCount: resolvedUrls.length,
+      };
+    } catch (e) {
+      results.singleItemEndpoint = { error: e instanceof Error ? e.message : String(e) };
+    }
+
+    // Also show raw response from single-item endpoint
+    results.singleItemRaw = await safeFetch(
+      `${baseUrl}/amapi/admin/items/auction/${testAuctionId}/item/${testItemId}`,
+      authHeaders
+    );
+  } else {
+    results.singleItemEndpoint = { skipped: "No test item found" };
   }
 
-  // Step 6: DB state
+  // DB state
   try {
-    const total = await prisma.enrichedItem.count();
+    const statusCounts = await prisma.enrichedItem.groupBy({ by: ["status"], _count: true });
     const items = await prisma.enrichedItem.findMany({
       take: 5,
       orderBy: { id: "asc" },
-      select: { id: true, auctionId: true, itemId: true, rawTitle: true, rawImageUrls: true, status: true },
+      select: {
+        id: true, auctionId: true, itemId: true, rawTitle: true,
+        rawImageUrls: true, status: true, enrichedAt: true,
+      },
     });
-    results.db = { totalItems: total, sample: items };
+    results.db = {
+      statusCounts: Object.fromEntries(statusCounts.map(s => [s.status, s._count])),
+      sampleItems: items.map(i => ({
+        ...i,
+        imageCount: i.rawImageUrls.length,
+        rawImageUrls: i.rawImageUrls.slice(0, 3),
+      })),
+    };
   } catch (e) {
     results.db = { error: e instanceof Error ? e.message : String(e) };
   }
