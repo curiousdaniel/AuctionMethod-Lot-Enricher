@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import { RunEnrichmentButton } from "./run-button";
-import { BulkApproveBar, RowApproveButton } from "./approve-actions";
+import { BulkApproveBar, RowApproveButton, RowCancelButton, BulkCancelBar } from "./approve-actions";
 
 const STATUS_COLORS: Record<string, string> = {
   PENDING: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
@@ -135,6 +135,17 @@ export default async function DashboardPage({
           <BulkApproveBar enrichedCount={stats.ENRICHED} />
         </div>
       )}
+
+      {/* Bulk Cancel Banner — shown when filtering to a cancellable status */}
+      {statusFilter &&
+        ["PENDING", "PROCESSING", "ENRICHED", "ERROR"].includes(statusFilter) && (
+          <div className="mb-8">
+            <BulkCancelBar
+              cancellableCount={stats[statusFilter as keyof typeof stats] as number}
+              statusFilter={statusFilter}
+            />
+          </div>
+        )}
 
       {/* Auctions Table */}
       {auctionDetails.length > 0 && (
@@ -344,24 +355,29 @@ export default async function DashboardPage({
                           : "—"}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {item.status === "ENRICHED" ? (
-                          <div className="flex items-center justify-end gap-2">
+                        <div className="flex items-center justify-end gap-2">
+                          {item.status === "ENRICHED" ? (
+                            <>
+                              <Link
+                                href={`/items/${item.id}`}
+                                className="px-2.5 py-1 text-xs rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 font-medium transition-colors"
+                              >
+                                Review
+                              </Link>
+                              <RowApproveButton itemId={item.id} />
+                            </>
+                          ) : (
                             <Link
                               href={`/items/${item.id}`}
-                              className="px-2.5 py-1 text-xs rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 font-medium transition-colors"
+                              className="text-xs text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
                             >
-                              Review
+                              View
                             </Link>
-                            <RowApproveButton itemId={item.id} />
-                          </div>
-                        ) : (
-                          <Link
-                            href={`/items/${item.id}`}
-                            className="text-xs text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
-                          >
-                            View
-                          </Link>
-                        )}
+                          )}
+                          {["PENDING", "PROCESSING", "ENRICHED", "ERROR"].includes(item.status) && (
+                            <RowCancelButton itemId={item.id} />
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))

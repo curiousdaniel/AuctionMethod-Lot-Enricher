@@ -23,6 +23,7 @@ export function EditableEnrichedForm({ item }: { item: ItemData }) {
 
   const [saving, setSaving] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const isDirty =
@@ -94,6 +95,28 @@ export function EditableEnrichedForm({ item }: { item: ItemData }) {
       setApproving(false);
     }
   }, [item.id, title, description, caption, value, isDirty, router]);
+
+  const isCancellable = ["PENDING", "PROCESSING", "ENRICHED", "ERROR"].includes(item.status);
+
+  const cancelEnrichment = useCallback(async () => {
+    if (!confirm("Cancel enrichment for this item? It will be marked as skipped.")) return;
+
+    setCancelling(true);
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || `Cancel failed (${res.status})`);
+      }
+      setMessage({ type: "success", text: "Enrichment cancelled" });
+      router.refresh();
+    } catch (err) {
+      setMessage({ type: "error", text: err instanceof Error ? err.message : "Cancel failed" });
+    } finally {
+      setCancelling(false);
+    }
+  }, [item.id, router]);
 
   return (
     <div className="space-y-6">
@@ -206,22 +229,35 @@ export function EditableEnrichedForm({ item }: { item: ItemData }) {
       </div>
 
       {/* Action buttons */}
-      {isEditable && (
+      {(isEditable || isCancellable) && (
         <div className="flex items-center gap-3 pt-2">
-          <button
-            onClick={approve}
-            disabled={approving || saving}
-            className="px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
-          >
-            {approving ? "Publishing..." : "Approve & Publish"}
-          </button>
-          <button
-            onClick={saveEdits}
-            disabled={saving || approving || !isDirty}
-            className="px-5 py-2.5 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-50 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2"
-          >
-            {saving ? "Saving..." : "Save Edits"}
-          </button>
+          {isEditable && (
+            <>
+              <button
+                onClick={approve}
+                disabled={approving || saving || cancelling}
+                className="px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
+              >
+                {approving ? "Publishing..." : "Approve & Publish"}
+              </button>
+              <button
+                onClick={saveEdits}
+                disabled={saving || approving || cancelling || !isDirty}
+                className="px-5 py-2.5 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-50 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2"
+              >
+                {saving ? "Saving..." : "Save Edits"}
+              </button>
+            </>
+          )}
+          {isCancellable && (
+            <button
+              onClick={cancelEnrichment}
+              disabled={cancelling || approving || saving}
+              className="px-5 py-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-700 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
+            >
+              {cancelling ? "Cancelling..." : "Cancel Enrichment"}
+            </button>
+          )}
         </div>
       )}
     </div>
