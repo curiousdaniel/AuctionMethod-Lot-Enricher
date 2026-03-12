@@ -204,43 +204,62 @@ export async function runEnrichmentBatch(): Promise<{
 }> {
   const batchSize = parseInt(process.env.ENRICHMENT_BATCH_SIZE ?? "5", 10);
   const minDelay = parseInt(process.env.ENRICHMENT_MIN_DELAY_MS ?? "1000", 10);
-
-  const pendingItems = await prisma.enrichedItem.findMany({
-    where: {
-      status: "PENDING",
-      retryCount: { lt: 3 },
-    },
-    orderBy: { createdAt: "asc" },
-    take: batchSize,
-  });
-
-  console.log(`[Batch] Found ${pendingItems.length} pending items to process`);
+  const maxRunMs = parseInt(process.env.ENRICHMENT_MAX_RUN_MS ?? "270000", 10);
+  const startTime = Date.now();
 
   let succeeded = 0;
   let errors = 0;
   let skipped = 0;
+  let totalProcessed = 0;
 
-  for (let i = 0; i < pendingItems.length; i++) {
-    const item = pendingItems[i];
-    const result = await enrichItem(item.id);
-
-    if (result.success) {
-      succeeded++;
-    } else if (result.error?.includes("404") || result.error?.includes("SKIPPED")) {
-      skipped++;
-    } else {
-      errors++;
+  while (true) {
+    if (Date.now() - startTime > maxRunMs) {
+      console.log(`[Batch] Approaching timeout after ${Math.round((Date.now() - startTime) / 1000)}s — stopping`);
+      break;
     }
 
-    if (i < pendingItems.length - 1) {
+    const pendingItems = await prisma.enrichedItem.findMany({
+      where: {
+        status: "PENDING",
+        retryCount: { lt: 3 },
+      },
+      orderBy: { createdAt: "asc" },
+      take: batchSize,
+    });
+
+    if (pendingItems.length === 0) {
+      console.log(`[Batch] No more pending items — all done`);
+      break;
+    }
+
+    console.log(`[Batch] Processing batch of ${pendingItems.length} (${totalProcessed} done so far)`);
+
+    for (const item of pendingItems) {
+      if (Date.now() - startTime > maxRunMs) {
+        console.log(`[Batch] Approaching timeout mid-batch — stopping`);
+        break;
+      }
+
+      const result = await enrichItem(item.id);
+      totalProcessed++;
+
+      if (result.success) {
+        succeeded++;
+      } else if (result.error?.includes("404") || result.error?.includes("SKIPPED")) {
+        skipped++;
+      } else {
+        errors++;
+      }
+
       await sleep(minDelay);
     }
   }
 
+  console.log(`[Batch] Finished: ${totalProcessed} processed, ${succeeded} succeeded, ${errors} errors, ${skipped} skipped`);
   const auctionCount = await prisma.auctionScan.count();
 
   return {
-    processed: pendingItems.length,
+    processed: totalProcessed,
     succeeded,
     errors,
     skipped,
