@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { updateItem } from "./amapi";
+import { getItem, getItemImageUrls } from "./amapi";
 import {
   analyzeImages,
   researchItem,
@@ -59,12 +59,28 @@ export async function enrichItem(enrichedItemId: number): Promise<EnrichmentResu
       data: { status: "PROCESSING" },
     });
 
-    // Use item data already stored in DB from the auction scan
     const rawTitle = record.rawTitle || "";
     const rawDescription = record.rawDescription || "";
-    const rawImageUrls = record.rawImageUrls || [];
+    let rawImageUrls = record.rawImageUrls || [];
 
     console.log(`[Enrich] Processing item ${record.itemId} from auction ${record.auctionId}`);
+
+    // Fetch full item details from the single-item endpoint to get the complete images array
+    try {
+      const freshItem = await getItem(record.auctionId, record.itemId);
+      const freshUrls = getItemImageUrls(freshItem);
+      if (freshUrls.length > rawImageUrls.length) {
+        console.log(`[Enrich] Single-item endpoint returned ${freshUrls.length} images (had ${rawImageUrls.length})`);
+        rawImageUrls = freshUrls;
+        await prisma.enrichedItem.update({
+          where: { id: enrichedItemId },
+          data: { rawImageUrls: freshUrls },
+        });
+      }
+    } catch (err) {
+      console.log(`[Enrich] Could not fetch single item — using stored images:`, err instanceof Error ? err.message : err);
+    }
+
     console.log(`[Enrich] Title: "${rawTitle}", Description length: ${rawDescription.length}, Images: ${rawImageUrls.length}`);
 
     await prisma.enrichedItem.update({
@@ -72,7 +88,6 @@ export async function enrichItem(enrichedItemId: number): Promise<EnrichmentResu
       data: { fetchedAt: new Date() },
     });
 
-    // Step 2: Download and encode images (up to MAX_IMAGES)
     const imageUrls = rawImageUrls.slice(0, MAX_IMAGES);
     let researchNotes = "";
 
@@ -157,29 +172,7 @@ export async function enrichItem(enrichedItemId: number): Promise<EnrichmentResu
       },
     });
 
-    // Step 7: Write back to AM API
-    console.log(`[Enrich] Writing back to AM API for item ${record.itemId}`);
-    try {
-      await updateItem(record.auctionId, record.itemId, {
-        title: copyResult.enrichedTitle,
-        description: copyResult.enrichedDescription,
-      });
-
-      await prisma.enrichedItem.update({
-        where: { id: enrichedItemId },
-        data: {
-          status: "WRITTEN",
-          writtenBackAt: new Date(),
-        },
-      });
-    } catch (patchError) {
-      console.error(
-        `[Enrich] Failed to PATCH item ${record.itemId} back to AM API:`,
-        patchError
-      );
-    }
-
-    console.log(`[Enrich] Successfully enriched item ${record.itemId}`);
+    console.log(`[Enrich] Item ${record.itemId} enriched — held for review`);
     return { success: true, itemId: enrichedItemId };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

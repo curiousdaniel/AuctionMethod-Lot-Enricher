@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import { RunEnrichmentButton } from "./run-button";
+import { BulkApproveBar, RowApproveButton } from "./approve-actions";
 
 const STATUS_COLORS: Record<string, string> = {
   PENDING: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
@@ -23,7 +24,6 @@ export default async function DashboardPage({
   const limit = 25;
   const offset = (page - 1) * limit;
 
-  // Stats
   const statusCounts = await prisma.enrichedItem.groupBy({
     by: ["status"],
     _count: true,
@@ -46,7 +46,6 @@ export default async function DashboardPage({
 
   const auctionCount = await prisma.auctionScan.count();
 
-  // Auctions with counts
   const auctions = await prisma.auctionScan.findMany({
     orderBy: { lastScannedAt: "desc" },
   });
@@ -65,11 +64,13 @@ export default async function DashboardPage({
       const pending = counts
         .filter((c) => c.status === "PENDING")
         .reduce((sum, c) => sum + c._count, 0);
-      return { ...auction, itemTotal, enriched, pending };
+      const awaitingReview = counts
+        .filter((c) => c.status === "ENRICHED")
+        .reduce((sum, c) => sum + c._count, 0);
+      return { ...auction, itemTotal, enriched, pending, awaitingReview };
     })
   );
 
-  // Items
   const itemWhere: Record<string, unknown> = {};
   if (statusFilter) {
     itemWhere.status = statusFilter;
@@ -97,30 +98,43 @@ export default async function DashboardPage({
       </div>
 
       {/* Stats Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-4 mb-8">
         <StatCard label="Total Items" value={stats.total} color="bg-slate-50 dark:bg-slate-800" />
         <StatCard
-          label="Written Back"
-          value={stats.WRITTEN}
-          color="bg-green-50 dark:bg-green-900/20"
+          label="Awaiting Review"
+          value={stats.ENRICHED}
+          color="bg-amber-50 dark:bg-amber-900/20"
+          href="/dashboard?status=ENRICHED"
         />
         <StatCard
-          label="Enriched"
-          value={stats.ENRICHED}
-          color="bg-emerald-50 dark:bg-emerald-900/20"
+          label="Published"
+          value={stats.WRITTEN}
+          color="bg-green-50 dark:bg-green-900/20"
         />
         <StatCard
           label="Pending"
           value={stats.PENDING}
           color="bg-yellow-50 dark:bg-yellow-900/20"
         />
-        <StatCard label="Errors" value={stats.ERROR} color="bg-red-50 dark:bg-red-900/20" />
         <StatCard
-          label="Auctions Tracked"
-          value={auctionCount}
+          label="Processing"
+          value={stats.PROCESSING}
           color="bg-blue-50 dark:bg-blue-900/20"
         />
+        <StatCard label="Errors" value={stats.ERROR} color="bg-red-50 dark:bg-red-900/20" />
+        <StatCard
+          label="Auctions"
+          value={auctionCount}
+          color="bg-slate-50 dark:bg-slate-800"
+        />
       </div>
+
+      {/* Review Queue Banner */}
+      {stats.ENRICHED > 0 && (
+        <div className="mb-8">
+          <BulkApproveBar enrichedCount={stats.ENRICHED} />
+        </div>
+      )}
 
       {/* Auctions Table */}
       {auctionDetails.length > 0 && (
@@ -140,10 +154,13 @@ export default async function DashboardPage({
                       Ends
                     </th>
                     <th className="text-right px-4 py-3 font-medium text-slate-600 dark:text-slate-400">
-                      Items Total
+                      Items
                     </th>
                     <th className="text-right px-4 py-3 font-medium text-slate-600 dark:text-slate-400">
-                      Enriched
+                      Review
+                    </th>
+                    <th className="text-right px-4 py-3 font-medium text-slate-600 dark:text-slate-400">
+                      Published
                     </th>
                     <th className="text-right px-4 py-3 font-medium text-slate-600 dark:text-slate-400">
                       Pending
@@ -173,8 +190,17 @@ export default async function DashboardPage({
                       <td className="px-4 py-3 text-right text-slate-900 dark:text-white">
                         {a.itemTotal}
                       </td>
-                      <td className="px-4 py-3 text-right text-emerald-600 dark:text-emerald-400">
-                        {a.enriched}
+                      <td className="px-4 py-3 text-right">
+                        {a.awaitingReview > 0 ? (
+                          <span className="text-amber-600 dark:text-amber-400 font-medium">
+                            {a.awaitingReview}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">0</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right text-green-600 dark:text-green-400">
+                        {a.enriched - a.awaitingReview}
                       </td>
                       <td className="px-4 py-3 text-right text-yellow-600 dark:text-yellow-400">
                         {a.pending}
@@ -192,22 +218,23 @@ export default async function DashboardPage({
       <section>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-            Enriched Items
+            Items
           </h2>
           <div className="flex gap-2 flex-wrap">
             <FilterLink label="All" href="/dashboard" active={!statusFilter} />
+            <FilterLink
+              label={`Review (${stats.ENRICHED})`}
+              href="/dashboard?status=ENRICHED"
+              active={statusFilter === "ENRICHED"}
+              highlight={stats.ENRICHED > 0}
+            />
             <FilterLink
               label="Pending"
               href="/dashboard?status=PENDING"
               active={statusFilter === "PENDING"}
             />
             <FilterLink
-              label="Enriched"
-              href="/dashboard?status=ENRICHED"
-              active={statusFilter === "ENRICHED"}
-            />
-            <FilterLink
-              label="Written"
+              label="Published"
               href="/dashboard?status=WRITTEN"
               active={statusFilter === "WRITTEN"}
             />
@@ -233,7 +260,7 @@ export default async function DashboardPage({
                     Lot #
                   </th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600 dark:text-slate-400">
-                    Raw Title
+                    Original Title
                   </th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600 dark:text-slate-400">
                     Enriched Title
@@ -247,23 +274,30 @@ export default async function DashboardPage({
                   <th className="text-left px-4 py-3 font-medium text-slate-600 dark:text-slate-400">
                     Enriched At
                   </th>
+                  <th className="text-right px-4 py-3 font-medium text-slate-600 dark:text-slate-400">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
                 {items.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={6}
+                      colSpan={7}
                       className="px-4 py-12 text-center text-slate-500 dark:text-slate-400"
                     >
-                      No items found. Run the enrichment cron to get started.
+                      {statusFilter === "ENRICHED"
+                        ? "No items awaiting review."
+                        : "No items found. Run the enrichment cron to get started."}
                     </td>
                   </tr>
                 ) : (
                   items.map((item) => (
                     <tr
                       key={item.id}
-                      className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors"
+                      className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors ${
+                        item.status === "ENRICHED" ? "bg-amber-50/40 dark:bg-amber-900/10" : ""
+                      }`}
                     >
                       <td className="px-4 py-3 text-slate-500 dark:text-slate-400 font-mono text-xs">
                         {item.lotNumber || "—"}
@@ -274,16 +308,16 @@ export default async function DashboardPage({
                           className="text-slate-900 dark:text-white hover:text-blue-600 dark:hover:text-blue-400 font-medium truncate block"
                         >
                           {item.rawTitle
-                            ? item.rawTitle.length > 60
-                              ? item.rawTitle.substring(0, 60) + "..."
+                            ? item.rawTitle.length > 50
+                              ? item.rawTitle.substring(0, 50) + "..."
                               : item.rawTitle
                             : "Untitled"}
                         </Link>
                       </td>
                       <td className="px-4 py-3 max-w-[200px] text-slate-600 dark:text-slate-400 truncate">
                         {item.enrichedTitle
-                          ? item.enrichedTitle.length > 60
-                            ? item.enrichedTitle.substring(0, 60) + "..."
+                          ? item.enrichedTitle.length > 50
+                            ? item.enrichedTitle.substring(0, 50) + "..."
                             : item.enrichedTitle
                           : "—"}
                       </td>
@@ -293,7 +327,7 @@ export default async function DashboardPage({
                             STATUS_COLORS[item.status] || "bg-slate-100 text-slate-600"
                           }`}
                         >
-                          {item.status}
+                          {item.status === "ENRICHED" ? "REVIEW" : item.status}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-400 text-xs">
@@ -308,6 +342,26 @@ export default async function DashboardPage({
                               minute: "2-digit",
                             })
                           : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {item.status === "ENRICHED" ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <Link
+                              href={`/items/${item.id}`}
+                              className="px-2.5 py-1 text-xs rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 font-medium transition-colors"
+                            >
+                              Review
+                            </Link>
+                            <RowApproveButton itemId={item.id} />
+                          </div>
+                        ) : (
+                          <Link
+                            href={`/items/${item.id}`}
+                            className="text-xs text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
+                          >
+                            View
+                          </Link>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -352,27 +406,35 @@ function StatCard({
   label,
   value,
   color,
+  href,
 }: {
   label: string;
   value: number;
   color: string;
+  href?: string;
 }) {
-  return (
-    <div className={`rounded-xl p-4 ${color} border border-slate-200 dark:border-slate-700`}>
+  const content = (
+    <div className={`rounded-xl p-4 ${color} border border-slate-200 dark:border-slate-700 ${href ? "hover:ring-2 hover:ring-emerald-400 transition-shadow cursor-pointer" : ""}`}>
       <p className="text-sm text-slate-600 dark:text-slate-400">{label}</p>
       <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{value}</p>
     </div>
   );
+  if (href) {
+    return <Link href={href}>{content}</Link>;
+  }
+  return content;
 }
 
 function FilterLink({
   label,
   href,
   active,
+  highlight,
 }: {
   label: string;
   href: string;
   active: boolean;
+  highlight?: boolean;
 }) {
   return (
     <Link
@@ -380,7 +442,9 @@ function FilterLink({
       className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
         active
           ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-          : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"
+          : highlight
+            ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-800/40"
+            : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"
       }`}
     >
       {label}

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { EditableEnrichedForm } from "./editable-form";
 
 const STATUS_COLORS: Record<string, string> = {
   PENDING: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
@@ -64,9 +65,9 @@ export default async function ItemDetailPage({
         </div>
       </div>
 
-      {/* Side-by-side comparison */}
+      {/* Side-by-side: Original on left, Editable enriched on right */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* Raw (original) */}
+        {/* Raw (original) — always read-only */}
         <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
           <h2 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-4">
             Original from AM API
@@ -92,79 +93,46 @@ export default async function ItemDetailPage({
               />
             </div>
           </div>
-        </div>
 
-        {/* Enriched */}
-        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-emerald-200 dark:border-emerald-700/50 p-6">
-          <h2 className="text-sm font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-4">
-            Enriched by AI
-          </h2>
-          <div className="space-y-4">
-            <div>
+          {/* Images in the original panel */}
+          {item.rawImageUrls.length > 0 && (
+            <div className="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700">
               <label className="text-xs font-medium text-slate-400 dark:text-slate-500 uppercase">
-                Title
+                Images ({item.rawImageUrls.length})
               </label>
-              <p className="mt-1 text-slate-900 dark:text-white font-medium">
-                {item.enrichedTitle || (
-                  <span className="text-slate-400 italic">Not yet enriched</span>
-                )}
-              </p>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-slate-400 dark:text-slate-500 uppercase">
-                Description
-              </label>
-              <div className="mt-1 text-slate-700 dark:text-slate-300 text-sm leading-relaxed">
-                {item.enrichedDesc || (
-                  <span className="text-slate-400 italic">Not yet enriched</span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Additional details */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-        {/* Photo Caption */}
-        <DetailCard title="Photo Caption">
-          <p className="text-sm text-slate-700 dark:text-slate-300">
-            {item.photoCaption || (
-              <span className="text-slate-400 italic">No caption</span>
-            )}
-          </p>
-        </DetailCard>
-
-        {/* Suggested Value */}
-        <DetailCard title="Suggested Value">
-          <p className="text-lg font-semibold text-emerald-600 dark:text-emerald-400">
-            {item.suggestedValue || (
-              <span className="text-slate-400 italic text-sm font-normal">No estimate</span>
-            )}
-          </p>
-        </DetailCard>
-
-        {/* Images */}
-        <DetailCard title="Image URLs">
-          {item.rawImageUrls.length > 0 ? (
-            <ul className="space-y-1">
-              {item.rawImageUrls.map((url, i) => (
-                <li key={i}>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {item.rawImageUrls.slice(0, 4).map((url, i) => (
                   <a
+                    key={i}
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline truncate block"
+                    className="block aspect-square rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 hover:opacity-80 transition-opacity"
                   >
-                    Image {i + 1}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={url}
+                      alt={`Item image ${i + 1}`}
+                      className="w-full h-full object-cover"
+                    />
                   </a>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-slate-400 italic">No images</p>
+                ))}
+              </div>
+            </div>
           )}
-        </DetailCard>
+        </div>
+
+        {/* Enriched — editable form when ENRICHED, read-only otherwise */}
+        <EditableEnrichedForm
+          item={{
+            id: item.id,
+            status: item.status,
+            enrichedTitle: item.enrichedTitle,
+            enrichedDesc: item.enrichedDesc,
+            photoCaption: item.photoCaption,
+            suggestedValue: item.suggestedValue,
+          }}
+        />
       </div>
 
       {/* Research Notes & Web Sources */}
@@ -202,22 +170,10 @@ export default async function ItemDetailPage({
       {/* Status Timeline */}
       <DetailCard title="Status Timeline">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
-          <TimelineEntry
-            label="Created"
-            date={item.createdAt}
-          />
-          <TimelineEntry
-            label="Fetched from API"
-            date={item.fetchedAt}
-          />
-          <TimelineEntry
-            label="Enriched"
-            date={item.enrichedAt}
-          />
-          <TimelineEntry
-            label="Written Back"
-            date={item.writtenBackAt}
-          />
+          <TimelineEntry label="Created" date={item.createdAt} />
+          <TimelineEntry label="Fetched from API" date={item.fetchedAt} />
+          <TimelineEntry label="Enriched" date={item.enrichedAt} />
+          <TimelineEntry label="Written Back" date={item.writtenBackAt} />
         </div>
         {item.errorMessage && (
           <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
