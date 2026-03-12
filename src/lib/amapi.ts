@@ -254,7 +254,8 @@ export async function getItem(auctionId: number, itemId: number): Promise<AMItem
   }
 
   const data = await res.json();
-  const item = data?.data?.items?.[0] ?? data?.item ?? data;
+  const rawItems = data?.data?.items;
+  const item = Array.isArray(rawItems) ? rawItems[0] : rawItems ?? data?.item ?? data;
   return { ...item, auction_id: item.auction_id ?? String(auctionId) };
 }
 
