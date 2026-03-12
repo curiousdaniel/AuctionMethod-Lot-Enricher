@@ -2,10 +2,13 @@ import { prisma } from "./prisma";
 import { amAuth, getAllActiveAuctions, getAllItems, getItemImageUrls, type AMItem } from "./amapi";
 import { runEnrichmentBatch } from "./enrichment-pipeline";
 
-export interface EnrichmentJobResult {
+export interface ScanResult {
   auctionsScanned: number;
   newItemsQueued: number;
   requeued: number;
+}
+
+export interface EnrichmentJobResult extends ScanResult {
   processed: number;
   succeeded: number;
   errors: number;
@@ -35,10 +38,13 @@ function extractDescription(item: AMItem): string {
   return "";
 }
 
-export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
+/**
+ * Scan auctions and queue new/updated items as PENDING.
+ * Fast operation (~10-20s) — no AI enrichment happens here.
+ */
+export async function scanAndQueueItems(): Promise<ScanResult> {
   validateEnvVars();
 
-  // Reset PROCESSING items stuck for more than 10 minutes
   const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
   const resetResult = await prisma.enrichedItem.updateMany({
     where: {
@@ -48,37 +54,31 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
     data: { status: "PENDING" },
   });
   if (resetResult.count > 0) {
-    console.log(`[Enrich Job] Reset ${resetResult.count} stuck PROCESSING items`);
+    console.log(`[Scan] Reset ${resetResult.count} stuck PROCESSING items`);
   }
 
-  // Clean up stale auction scans for auctions that have ended
   const now = new Date();
   await prisma.auctionScan.deleteMany({
-    where: {
-      endsAt: { lt: now },
-    },
+    where: { endsAt: { lt: now } },
   });
 
-  console.log("[Enrich Job] Authenticating with AM API...");
+  console.log("[Scan] Authenticating with AM API...");
   await amAuth();
-  console.log("[Enrich Job] Auth successful");
+  console.log("[Scan] Auth successful");
 
-  console.log("[Enrich Job] Fetching active auctions...");
+  console.log("[Scan] Fetching active auctions...");
   const auctions = await getAllActiveAuctions();
-  console.log(`[Enrich Job] Found ${auctions.length} active/upcoming auctions`);
+  console.log(`[Scan] Found ${auctions.length} active/upcoming auctions`);
 
   let newItemsQueued = 0;
   let requeued = 0;
   for (const auction of auctions) {
     const auctionIdNum = parseInt(String(auction.id), 10);
-    console.log(`[Enrich Job] Scanning auction ${auction.id}: "${auction.title}"`);
+    console.log(`[Scan] Scanning auction ${auction.id}: "${auction.title}"`);
 
-    // Fetch items via the proper items endpoint (includes full images array)
     const items = await getAllItems(auctionIdNum);
-
-    // Fall back to embedded items if the items endpoint returned nothing
     const itemsToProcess: AMItem[] = items.length > 0 ? items : (auction.items ?? []);
-    console.log(`[Enrich Job] Auction ${auction.id}: ${itemsToProcess.length} items (source: ${items.length > 0 ? "items endpoint" : "embedded"})`);
+    console.log(`[Scan] Auction ${auction.id}: ${itemsToProcess.length} items (source: ${items.length > 0 ? "items endpoint" : "embedded"})`);
 
     await prisma.auctionScan.upsert({
       where: { auctionId: auctionIdNum },
@@ -125,11 +125,10 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
           },
         });
         newItemsQueued++;
-        console.log(`[Enrich Job] Queued item ${itemIdNum}: "${item.title}" (${imageUrls.length} images)`);
+        console.log(`[Scan] Queued item ${itemIdNum}: "${item.title}" (${imageUrls.length} images)`);
       } else if (existing.rawImageUrls.length === 0 && imageUrls.length > 0) {
-        // Backfill images AND reset to PENDING so item re-enriches with vision analysis
         const needsReEnrich = ["ENRICHED", "WRITTEN", "ERROR"].includes(existing.status);
-        console.log(`[Enrich Job] Backfilling ${imageUrls.length} images for item ${itemIdNum}${needsReEnrich ? " — resetting to PENDING for re-enrichment" : ""}`);
+        console.log(`[Scan] Backfilling ${imageUrls.length} images for item ${itemIdNum}${needsReEnrich ? " — resetting to PENDING" : ""}`);
         await prisma.enrichedItem.update({
           where: { id: existing.id },
           data: {
@@ -156,14 +155,22 @@ export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
     }
   }
 
-  console.log(`[Enrich Job] Queued ${newItemsQueued} new, ${requeued} re-queued for re-enrichment`);
+  console.log(`[Scan] Queued ${newItemsQueued} new, ${requeued} re-queued for re-enrichment`);
+  return { auctionsScanned: auctions.length, newItemsQueued, requeued };
+}
+
+/**
+ * Convenience: scan + process in a single call.
+ * Used by the cron fallback path if chaining is unavailable.
+ */
+export async function runEnrichmentJob(): Promise<EnrichmentJobResult> {
+  const scan = await scanAndQueueItems();
+
   console.log("[Enrich Job] Starting enrichment batch...");
   const result = await runEnrichmentBatch();
 
   return {
-    auctionsScanned: auctions.length,
-    newItemsQueued,
-    requeued,
+    ...scan,
     processed: result.processed,
     succeeded: result.succeeded,
     errors: result.errors,

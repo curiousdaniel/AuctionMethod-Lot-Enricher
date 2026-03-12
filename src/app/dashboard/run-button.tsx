@@ -39,15 +39,22 @@ export function RunEnrichmentButton() {
       }
 
       setState("done");
-      const parts = [];
-      if (data.auctionsScanned != null) parts.push(`${data.auctionsScanned} auctions scanned`);
-      if (data.newItemsQueued != null) parts.push(`${data.newItemsQueued} new items queued`);
-      if (data.processed != null) parts.push(`${data.processed} processed`);
-      if (data.succeeded != null) parts.push(`${data.succeeded} succeeded`);
-      if (data.errors != null && data.errors > 0) parts.push(`${data.errors} errors`);
-      setResult(parts.join(", ") || "Completed");
 
-      setTimeout(() => window.location.reload(), 2000);
+      if (data.status === "processing" && data.totalPending > 0) {
+        const parts = [`Processing ${data.totalPending} items in background`];
+        if (data.auctionsScanned != null) parts.push(`${data.auctionsScanned} auctions scanned`);
+        if (data.newItemsQueued != null && data.newItemsQueued > 0) parts.push(`${data.newItemsQueued} new items queued`);
+        setResult(parts.join(" \u2022 "));
+      } else if (data.totalPending === 0) {
+        setResult("All items already processed");
+      } else {
+        const parts = [];
+        if (data.auctionsScanned != null) parts.push(`${data.auctionsScanned} auctions scanned`);
+        if (data.newItemsQueued != null) parts.push(`${data.newItemsQueued} new items queued`);
+        setResult(parts.join(", ") || "Completed");
+      }
+
+      setTimeout(() => window.location.reload(), 3000);
     } catch (err) {
       setState("error");
       setResult(err instanceof Error ? err.message : "Network error");
@@ -71,7 +78,7 @@ export function RunEnrichmentButton() {
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-            Running...
+            Scanning...
           </>
         ) : (
           "Run Enrichment Now"

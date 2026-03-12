@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@prisma/client": "^5.22.0",
+    "@vercel/functions": "^3.4.3",
     "next": "14.2.35",
     "prisma": "^5.22.0",
     "react": "^18",
